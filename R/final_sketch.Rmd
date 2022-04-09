@@ -1,0 +1,247 @@
+---
+title: "Final Sketch"
+description: ""
+author:
+  - name: Cédric Scherer
+    url: https://cedricscherer.com
+  - name: Georgios Karamanis
+    url: https://karaman.is
+date: "`r Sys.Date()`"
+output:
+  distill::distill_article:
+    toc: true
+    toc_depth: 3
+#code_folding: true
+keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      dev = "svg", fig.width = 10, layout = "l-page")
+
+invisible(Sys.setlocale("LC_TIME", "C"))
+
+library(tidyverse)
+library(lubridate)
+library(sf)
+library(albersusa)
+library(colorspace)
+library(shades)
+```
+
+```{r hub_map, fig.height=7, cache=TRUE}
+## color palette hubs
+greys <- c(0, 60, 40, 60, 0, 40, 60, 0)
+pal1 <- paste0("grey", greys)
+
+# Set up hubs map
+hub_northwest <- c("AK", "OR", "ID", "WA")
+hub_california <- "CA"
+hub_southwest <- c("AZ", "HI", "NM", "NV", "UT")
+hub_northern_plains <- c("CO", "MT", "ND", "NE", "SD", "WY")
+hub_southern_plains <- c("KS", "OK", "TX")
+hub_midwest <- c("IL", "IN", "MN", "IA", "MI", "MO", "OH", "WI")
+hub_southeast <- c("AL", "AR", "LA", "MS", "TN", "KY", "GA", "NC", "FL", "GA", "SC", "VA")
+hub_northeast <- c("CT", "DE", "ME", "MA", "MD", "NH", "NJ", "NY", "PA", "RI", "VT", "WV")
+
+hubs_order <- c("Northwest", "California", "Southwest", "Northern Plains", "Southern Plains", "Midwest", "Southeast", "Northeast")
+
+hubs_map <- albersusa::usa_sf() %>% 
+  filter(name != "Alaska" & name != "Hawaii") %>% # Remove Alaska and Hawaii from map
+  mutate(
+    hub = case_when(
+      iso_3166_2 %in% hub_northwest ~ "Northwest",
+      iso_3166_2 %in% hub_california ~ "California",
+      iso_3166_2 %in% hub_southwest ~ "Southwest",
+      iso_3166_2 %in% hub_northern_plains ~ "Northern Plains",
+      iso_3166_2 %in% hub_southern_plains ~ "Southern Plains",
+      iso_3166_2 %in% hub_midwest ~ "Midwest",
+      iso_3166_2 %in% hub_southeast ~ "Southeast",
+      TRUE ~ "Northeast"
+    ),
+    hub = fct_relevel(hub, hubs_order)
+  )
+
+hubs_map_boundaries <- rmapshaper::ms_innerlines(hubs_map)
+
+# Plot regions map
+map <- ggplot(hubs_map, aes(fill = hub)) +
+  geom_sf(color = NA) +
+  geom_sf(data = hubs_map_boundaries, fill = NA, color = "white", size = .35) +
+  scale_fill_manual(values = pal1) +
+  guides(fill = guide_legend(nrow = 1)) +
+  theme_void() +
+  theme(
+    legend.position = "none",
+    legend.title = element_blank()
+  )
+
+map
+
+ggsave(here::here("pitch", "regions_map.pdf"), width = 10, height = 7, device = cairo_pdf)
+ggsave(here::here("pitch", "regions_map.svg"), width = 10, height = 7)
+```
+
+```{r data-drought-monitor, cache=TRUE}
+# Read in dm hub data
+dm_perc_cat_hubs_raw <- rio::import(here::here("data", "drought_monitor", "dm_export_20000101_20210909_perc_cat_hubs.json"))
+
+max(dm_perc_cat_hubs_raw$MapDate)
+```
+
+```{r climatic-hubs-stacked-bars-var, fig.width=14.5, fig.height=11.8, cache=TRUE}
+# Wrangle
+dm_perc_cat_hubs <-
+  dm_perc_cat_hubs_raw %>%
+  ## Northern Forest == Midwest + Northeast
+  filter(Name != "Northern Forests\\n") %>%
+  ## Carribean rather boring
+  filter(Name != "Caribbean") %>%
+  mutate(
+    across(c(MapDate, ValidStart, ValidEnd), as_date),
+    across(None:D4, ~as.numeric(.x) / 100),
+    Name = stringr::str_remove(Name, "\\\\n"),
+    Name = str_replace(Name, "Nothern", "Northern")
+  ) %>%
+  rename("date" = "MapDate", "hub" = "Name") %>%
+  pivot_longer(
+    cols = c(None:D4),
+    names_to = "category",
+    values_to = "percentage"
+  ) %>%
+  filter(category != "None") %>%
+  mutate(category = factor(category)) %>%
+  dplyr::select(-ValidStart, -ValidEnd, -StatisticFormatID) %>%
+  mutate(
+    year = year(date),
+    week = week(date),
+    hub = factor(hub, levels = hubs_order, labels = hubs_order)
+  ) %>%
+  group_by(year) %>%
+  mutate(max_week = max(week)) %>% ## for var
+  ungroup() %>% 
+  filter(percentage > 0)
+
+# Plot stacked bars (varying backgrou)
+bars <- ggplot(dm_perc_cat_hubs, aes(week, percentage)) +
+  geom_rect(aes(
+    xmin = .5, xmax = max_week + .5,
+    ymin = -0.005, ymax = 1),
+    fill = "#f4f4f9", color = NA, size = 0.4, show.legend = FALSE) + #9d9ca7, 99a4be, 8696bd
+  geom_col(aes(fill = category, fill = after_scale(addmix(darken(fill, .05, space = "HLS"), "#d8005a", .15)), 
+               color = after_scale(darken(fill, .2, space = "HLS"))),
+           width = .9, size = 0.12) + 
+  facet_grid(rows = vars(year), cols = vars(hub), switch = "y") +
+  coord_cartesian(clip = "off") +
+  scale_x_continuous(expand = c(.02, .02), guide = "none", name = NULL) +
+  scale_y_continuous(expand = c(0, 0), position = "right", labels = NULL, name = NULL) + 
+  scale_fill_viridis_d(option = "rocket", direction = -1, begin = .17, end = .97, 
+                       name = "Category:", labels = c("Abnormally Dry", "Moderate Drought", 
+                                                      "Severe Drought", "Extreme Drought", "Exceptional Drought")) +
+  guides(fill = guide_legend(override.aes = list(size = 1))) +
+  theme_light(base_size = 18, base_family = "Roboto") +
+  theme(axis.title = element_text(size = 14, color = "black"),
+        axis.text = element_text(family = "Roboto Mono", size = 11),
+        axis.line.x = element_blank(),
+        axis.line.y = element_line(color = "black", size = .2),
+        axis.ticks.y = element_line(color = "black", size = .2),
+        axis.ticks.length.y = unit(2, "mm"),
+        legend.position = "top",
+        legend.title = element_text(color = "#2DAADA", size = 18, face = "bold"),
+        legend.text = element_text(color = "#2DAADA", size = 16),
+        strip.text.x = element_text(size = 16, hjust = .5, face = "plain", color = "black", margin = margin(t = 20, b = 5)),
+        strip.text.y.left = element_text(size = 18, angle = 0, vjust = .5, face = "plain", color = "black"),
+        strip.background = element_rect(fill = "transparent", color = "transparent"),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.spacing.x = unit(0.3, "lines"),
+        panel.spacing.y = unit(0.25, "lines"),
+        panel.background = element_rect(fill = "transparent", color = "transparent"),
+        panel.border = element_rect(color = "transparent", size = 0),
+        plot.background = element_rect(fill = "transparent", color = "transparent", size = .4),
+        plot.margin = margin(rep(18, 4)))
+
+bars
+
+ggsave(here::here("pitch", "drought_bars_facet_var.pdf"), width = 14.5, height = 11.8, device = cairo_pdf)
+ggsave(here::here("pitch", "drought_bars_facet_var.svg"), width = 14.5, height = 11.8)
+```
+
+
+```{r climatic-hubs-stacked-bars-fixed, fig.width=14.5, fig.height=11.8, cache=TRUE}
+# Wrangle
+dm_perc_cat_hubs <-
+  dm_perc_cat_hubs_raw %>%
+  ## Northern Forest == Midwest + Northeast
+  filter(Name != "Northern Forests\\n") %>%
+  ## Carribean rather boring
+  filter(Name != "Caribbean") %>%
+  mutate(
+    across(c(MapDate, ValidStart, ValidEnd), as_date),
+    across(None:D4, ~as.numeric(.x) / 100),
+    Name = stringr::str_remove(Name, "\\\\n"),
+    Name = str_replace(Name, "Nothern", "Northern")
+  ) %>%
+  rename("date" = "MapDate", "hub" = "Name") %>%
+  pivot_longer(
+    cols = c(None:D4),
+    names_to = "category",
+    values_to = "percentage"
+  ) %>%
+  filter(category != "None") %>%
+  mutate(category = factor(category)) %>%
+  dplyr::select(-ValidStart, -ValidEnd, -StatisticFormatID) %>%
+  mutate(
+    year = year(date),
+    week = week(date),
+    hub = factor(hub, levels = hubs_order, labels = hubs_order)
+  ) %>%
+  group_by(year) %>%
+  mutate(max_week = ifelse(year == 2021, max(week), 53)) %>% ## for fixed
+  ungroup() %>% 
+  filter(percentage > 0)
+
+# Plot stacked bars (varying backgrou)
+bars <- ggplot(dm_perc_cat_hubs, aes(week, percentage)) +
+  geom_rect(aes(
+    xmin = .5, xmax = max_week + .5,
+    ymin = -0.005, ymax = 1),
+    fill = "#f4f4f9", color = NA, size = 0.4, show.legend = FALSE) + #9d9ca7, 99a4be, 8696bd
+  geom_col(aes(fill = category, fill = after_scale(addmix(darken(fill, .05, space = "HLS"), "#d8005a", .15)), 
+               color = after_scale(darken(fill, .2, space = "HLS"))),
+           width = .9, size = 0.12) + 
+  facet_grid(rows = vars(year), cols = vars(hub), switch = "y") +
+  coord_cartesian(clip = "off") +
+  scale_x_continuous(expand = c(.02, .02), guide = "none", name = NULL) +
+  scale_y_continuous(expand = c(0, 0), position = "right", labels = NULL, name = NULL) + 
+  scale_fill_viridis_d(option = "rocket", direction = -1, begin = .17, end = .97, 
+                       name = "Category:", labels = c("Abnormally Dry", "Moderate Drought", 
+                                                      "Severe Drought", "Extreme Drought", "Exceptional Drought")) +
+  guides(fill = guide_legend(override.aes = list(size = 1))) +
+  theme_light(base_size = 18, base_family = "Roboto") +
+  theme(axis.title = element_text(size = 14, color = "black"),
+        axis.text = element_text(family = "Roboto Mono", size = 11),
+        axis.line.x = element_blank(),
+        axis.line.y = element_line(color = "black", size = .2),
+        axis.ticks.y = element_line(color = "black", size = .2),
+        axis.ticks.length.y = unit(2, "mm"),
+        legend.position = "top",
+        legend.title = element_text(color = "#2DAADA", size = 18, face = "bold"),
+        legend.text = element_text(color = "#2DAADA", size = 16),
+        strip.text.x = element_text(size = 16, hjust = .5, face = "plain", color = "black", margin = margin(t = 20, b = 5)),
+        strip.text.y.left = element_text(size = 18, angle = 0, vjust = .5, face = "plain", color = "black"),
+        strip.background = element_rect(fill = "transparent", color = "transparent"),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.spacing.x = unit(0.3, "lines"),
+        panel.spacing.y = unit(0.25, "lines"),
+        panel.background = element_rect(fill = "transparent", color = "transparent"),
+        panel.border = element_rect(color = "transparent", size = 0),
+        plot.background = element_rect(fill = "transparent", color = "transparent", size = .4),
+        plot.margin = margin(rep(18, 4)))
+
+bars
+
+ggsave(here::here("pitch", "drought_bars_facet_fixed.pdf"), width = 14.5, height = 11.8, device = cairo_pdf)
+ggsave(here::here("pitch", "drought_bars_facet_fixed.svg"), width = 14.5, height = 11.8)
+```
